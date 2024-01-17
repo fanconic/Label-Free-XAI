@@ -13,7 +13,9 @@ class AuxiliaryFunction(Module):
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
         if len(self.prediction) == len(input_features):
-            return torch.sum(self.prediction * self.black_box(input_features), dim=-1)
+            return torch.sum(
+                self.prediction * self.black_box(input_features), dim=-1
+            )  # This is the juicy part: g_x(x_tilde)
         elif len(input_features) % len(self.prediction) == 0:
             n_repeat = int(len(input_features) / len(self.prediction))
             return torch.sum(

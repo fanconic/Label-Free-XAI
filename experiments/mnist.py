@@ -11,7 +11,7 @@ import pandas as pd
 import seaborn as sns
 import torch
 import torchvision
-from captum.attr import GradientShap, IntegratedGradients, Saliency
+from captum.attr import GradientShap, IntegratedGradients, Saliency, Lime
 from scipy.stats import spearmanr
 from torch.utils.data import DataLoader, RandomSampler, Subset
 from torchvision import transforms
