@@ -3,6 +3,7 @@
 
 
 import torch
+import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,9 +29,11 @@ def save_preprocessed_img(fname, preprocessed_imgs, index=0, save=False):
     undo_preprocessed_img = undo_preprocessed_img[0]
     undo_preprocessed_img = undo_preprocessed_img
     undo_preprocessed_img = np.transpose(undo_preprocessed_img, [1, 2, 0])
-    undo_preprocessed_img = (undo_preprocessed_img - undo_preprocessed_img.min()) / (
-        undo_preprocessed_img.max() - undo_preprocessed_img.min()
-    )
+
+    if undo_preprocessed_img.max() > 1 or undo_preprocessed_img.min() < 0:
+        undo_preprocessed_img = (
+            undo_preprocessed_img - undo_preprocessed_img.min()
+        ) / (undo_preprocessed_img.max() - undo_preprocessed_img.min())
     if save:
         if undo_preprocessed_img.shape[2] == 1:
             undo_preprocessed_img = np.repeat(undo_preprocessed_img, 3, axis=2)
@@ -211,7 +214,9 @@ class LocalAnalysis(object):
         # Forward the image variable through the network
         reconstruction, min_distances = self.ppnet(input_image)
         conv_output, distances = self.ppnet.push_forward(input_image)
-        prototype_activations = self.ppnet.distance_2_similarity(min_distances)
+        prototype_activations = F.softmax(
+            self.ppnet.distance_2_similarity(min_distances), dim=1
+        )
         prototype_activation_patterns = self.ppnet.distance_2_similarity(distances)
 
         if self.ppnet.prototype_activation_function == "linear":
@@ -254,8 +259,8 @@ class LocalAnalysis(object):
         inspected_min = None
         inspected_max = None
 
-        logs = {0: [], 1: []}
         display_images = []
+        similarity_values = []
         for i in range(1, max_prototypes + 1):
             if top_n is not None and top_n != i:
                 continue
@@ -271,6 +276,7 @@ class LocalAnalysis(object):
                 inspected_index, inspected_min, inspected_max = None, None, None
                 inspected_index = dict_sorted_indices_act[0][-i].item()
 
+            similarity_values += [dict_array_act[0][-i]] * 7
             p_img = save_prototype(
                 self.prototypes_dir,
                 os.path.join(
@@ -370,6 +376,12 @@ class LocalAnalysis(object):
             heatmap = heatmap[..., ::-1]
             overlayed_img = 0.5 * original_img + 0.3 * heatmap
 
+            p_img_test = original_img[
+                high_act_patch_indices[0] : high_act_patch_indices[1],
+                high_act_patch_indices[2] : high_act_patch_indices[3],
+                :,
+            ]
+
             plt.imsave(
                 os.path.join(
                     specific_folder,
@@ -384,6 +396,7 @@ class LocalAnalysis(object):
                 p_img,
                 p_img_with_bbox,
                 overlayed_img,
+                p_img_test,
                 reconstructed_img,
                 target_img,
             ]
@@ -395,11 +408,17 @@ class LocalAnalysis(object):
                 "Prototype",
                 "Test Image + BBox",
                 "Test Image + Activation Map",
+                "Test sample feature",
                 "Reconustruction",
                 "Ground Truth",
             ]
 
-            visualize_image_grid(images=display_images, titles=display_titles, ncols=6)
+            visualize_image_grid(
+                images=display_images,
+                titles=display_titles,
+                ncols=7,
+                similarity_values=similarity_values,
+            )
             plt.tight_layout()
             plt.show()
 

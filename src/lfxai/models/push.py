@@ -16,6 +16,7 @@ from src.lfxai.utils.helpers import makedir, find_high_activation_crop
 def push_prototypes(
     dataloader,  # pytorch dataloader (must be unnormalized in [0,1])
     prototype_network,  # pytorch network with prototype_vectors
+    pert,
     prototype_layer_stride=1,
     root_dir_for_saving_prototypes=None,  # if not None, prototypes will be saved here
     epoch_number=None,  # if not provided, prototypes saved previously will be overwritten
@@ -70,7 +71,7 @@ def push_prototypes(
         start_index_of_search_batch = push_iter * search_batch_size
 
         update_prototypes_on_batch(
-            search_batch_input,
+            pert(search_batch_input),
             start_index_of_search_batch,
             prototype_network,
             global_min_proto_dist,
@@ -249,6 +250,10 @@ def update_prototypes_on_batch(
                     # save the whole image containing the prototype as png
                     if original_img_j.shape[2] == 1:
                         original_img_j = np.repeat(original_img_j, 3, axis=2)
+                    if original_img_j.max() > 1 or original_img_j.min() < 0:
+                        original_img_j = (original_img_j - original_img_j.min()) / (
+                            original_img_j.max() - original_img_j.min()
+                        )
                     plt.imsave(
                         os.path.join(
                             dir_for_saving_prototypes,
@@ -278,6 +283,16 @@ def update_prototypes_on_batch(
                         overlayed_original_img_j = np.repeat(
                             overlayed_original_img_j, 3, axis=2
                         )
+                    if (
+                        overlayed_original_img_j.max() > 1
+                        or overlayed_original_img_j.min() < 0
+                    ):
+                        overlayed_original_img_j = (
+                            overlayed_original_img_j - overlayed_original_img_j.min()
+                        ) / (
+                            overlayed_original_img_j.max()
+                            - overlayed_original_img_j.min()
+                        )
                     plt.imsave(
                         os.path.join(
                             dir_for_saving_prototypes,
@@ -298,6 +313,10 @@ def update_prototypes_on_batch(
                     ):
                         if rf_img_j.shape[2] == 1:
                             rf_img_j = np.repeat(rf_img_j, 3, axis=2)
+                        if rf_img_j.max() > 1 or rf_img_j.min() < 0:
+                            rf_img_j = (rf_img_j - rf_img_j.min()) / (
+                                rf_img_j.max() - rf_img_j.min()
+                            )
                         plt.imsave(
                             os.path.join(
                                 dir_for_saving_prototypes,
@@ -318,6 +337,10 @@ def update_prototypes_on_batch(
                             overlayed_rf_img_j = np.repeat(
                                 overlayed_rf_img_j, 3, axis=2
                             )
+                        if overlayed_rf_img_j.max() > 1 or overlayed_rf_img_j.min() < 0:
+                            overlayed_rf_img_j = (
+                                overlayed_rf_img_j - overlayed_rf_img_j.min()
+                            ) / (overlayed_rf_img_j.max() - overlayed_rf_img_j.min())
                         plt.imsave(
                             os.path.join(
                                 dir_for_saving_prototypes,
@@ -334,6 +357,10 @@ def update_prototypes_on_batch(
                     # save the prototype image (highly activated region of the whole image)
                     if proto_img_j.shape[2] == 1:
                         proto_img_j = np.repeat(proto_img_j, 3, axis=2)
+                    if proto_img_j.max() > 1 or proto_img_j.min() < 0:
+                        proto_img_j = (proto_img_j - proto_img_j.min()) / (
+                            proto_img_j.max() - proto_img_j.min()
+                        )
                     plt.imsave(
                         os.path.join(
                             dir_for_saving_prototypes,

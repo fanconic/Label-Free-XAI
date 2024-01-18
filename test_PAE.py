@@ -15,13 +15,34 @@ from src.lfxai.models.images import (
 from src.lfxai.models.pretext import Identity, RandomNoise, Mask
 from src.lfxai.models.local_analysis import LocalAnalysis
 import os
+import random
+import numpy as np
+
+
+def set_seed(seed: int):
+    """Set all random seeds
+    Args:
+        seed (int): integer for reproducible experiments
+    """
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+
+
+set_seed(42)
 
 # Select torch device
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # pert = Identity()
-pert = RandomNoise(noise_level=0.3)
-# pert = Mask(mask_proportion=0.2)
+# pert = RandomNoise(noise_level=0.3)
+pert = Mask(mask_proportion=0.2)
+
+model_name = "ProtoAE_inpainting_2"
 
 # Get Prototype Autoencoder model
 latent_dim = 32
@@ -31,9 +52,9 @@ decoder = ProtoDecoderMnist(encoded_space_dim=latent_dim)
 protoautoencoder = ProtoAutoEncoderMnist(
     encoder,
     decoder,
-    prototype_shape=(n_prototypes, latent_dim, 5, 5),
+    prototype_shape=(n_prototypes, latent_dim, 1, 1),
     input_pert=pert,
-    name="ProtoAE",
+    name=model_name,
     metric="l2",
     prototype_activation_function="log",
 )
@@ -68,6 +89,9 @@ test_loader = DataLoader(test_subset, batch_size=1, shuffle=False)
 
 # Train the denoising autoencoder
 epochs = 100
+start_push_epoch = 70
+push_epoch_frequency = 10
+freeze_epoch = 90
 save_dir = Path.cwd() / "results/mnist/consistency_features"
 if not save_dir.exists():
     os.makedirs(save_dir)
@@ -80,6 +104,9 @@ protoautoencoder.fit(
     epochs,
     patience=epochs,
     lr=1e-3,
+    start_push_epoch=start_push_epoch,
+    push_epoch_frequency=push_epoch_frequency,
+    freeze_epoch=freeze_epoch,
 )
 
 # Export model to ONNX to inspect it
@@ -90,9 +117,11 @@ protoautoencoder.load_state_dict(
 
 # Visluaise the
 load_model_dir = "results/mnist/consistency_features"
-load_model_name = "ProtoAE.pt"
-prototypes_dir = "results/prototypes/ProtoAE"
-prototype_img_save_dir = f"results/prototypes/ProtoAE/epoch-{epochs-10}-visualize"
+load_model_name = f"{model_name}.pt"
+prototypes_dir = f"results/prototypes/{model_name}"
+prototype_img_save_dir = (
+    f"results/prototypes/{model_name}/epoch-{freeze_epoch}-visualize"
+)
 loc_analysis = LocalAnalysis(
     protoautoencoder,
     prototypes_dir,

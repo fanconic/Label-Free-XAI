@@ -116,13 +116,19 @@ class ProtoDecoderMnist(nn.Module):
     def __init__(self, encoded_space_dim):
         super().__init__()
         self.decoder_conv = nn.Sequential(
-            nn.ConvTranspose2d(encoded_space_dim, 16, 3, stride=1, output_padding=0),
+            nn.ConvTranspose2d(
+                encoded_space_dim, 16, 3, stride=1, output_padding=0
+            ),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
-            nn.ConvTranspose2d(16, 8, 3, stride=2, padding=1, output_padding=1),
+            nn.ConvTranspose2d(
+                16, 8, 3, stride=2, padding=1, output_padding=1
+            ),
             nn.BatchNorm2d(8),
             nn.ReLU(True),
-            nn.ConvTranspose2d(8, 1, 3, stride=2, padding=1, output_padding=1),
+            nn.ConvTranspose2d(
+                8, 1, 3, stride=2, padding=1, output_padding=1
+            ),
         )
 
     def forward(self, x):
@@ -182,6 +188,16 @@ class ProtoAutoEncoderMnist(nn.Module):
         )
         self.ones = nn.Parameter(torch.ones(self.prototype_shape), requires_grad=False)
 
+        self.up_layer = nn.Sequential(
+            nn.ConvTranspose2d(self.d_prototypes, self.d_prototypes, 5),
+            nn.BatchNorm2d(self.d_prototypes),
+            nn.ReLU(True),
+        )
+
+        nn.Parameter(
+            torch.rand((self.d_prototypes, self.d_prototypes, 5, 5)), requires_grad=True
+        )
+
     def forward(self, x) -> Tuple[torch.Tensor]:
         """Forward pass of model. decoded image is based on similarities from the prototypes
 
@@ -193,14 +209,14 @@ class ProtoAutoEncoderMnist(nn.Module):
         if self.training:
             x = self.input_pert(x)
         x = self.encoder(x)
-        distances = self.compute_distances_2(x)
-        min_distances = distances
+        distances = self.compute_distances(x)
+        # min_distances = distances
         # x = -F.max_pool2d(-x, kernel_size=(distances.size()[2], distances.size()[3]))
         # global min pooling
-        # min_distances = -F.max_pool2d(
-        #     -distances, kernel_size=(distances.size()[2], distances.size()[3])
-        # )
-        # min_distances = min_distances.view(-1, self.n_prototypes)
+        min_distances = -F.max_pool2d(
+            -distances, kernel_size=(distances.size()[2], distances.size()[3])
+        )
+        min_distances = min_distances.view(-1, self.n_prototypes)
         prototype_activations = self.distance_2_similarity(min_distances)
 
         # the new latent variable is a weighted sum of the existing prototypes
@@ -208,8 +224,11 @@ class ProtoAutoEncoderMnist(nn.Module):
         z = torch.einsum(
             "ij,jklm->iklm", F.softmax(prototype_activations, dim=1), self.protolayer
         )
+
+        # upscale image
+        z = self.up_layer(z)
         # z = F.interpolate(
-        #     z, size=(distances.size()[2], distances.size()[3]), mode="nearest"
+        #    z, size=(distances.size()[2], distances.size()[3]), mode="nearest"
         # )
         # x = F.interpolate(
         #     x, size=(distances.size()[2], distances.size()[3]), mode="nearest"
@@ -228,13 +247,15 @@ class ProtoAutoEncoderMnist(nn.Module):
     def _l2_convolution(self, x: torch.Tensor) -> torch.Tensor:
         """Apply self.protolayer as l2-convolution filters on input x"""
         x2 = x**2
-        x2_patch_sum = F.conv2d(input=x2, weight=self.ones)  # (B, P, H, W)
+        # (B, P, H, W)
+        x2_patch_sum = F.conv2d(input=x2, weight=self.ones, padding="same")
 
         p2 = self.protolayer**2
         p2 = torch.sum(p2, dim=(1, 2, 3))
         p2_reshape = p2.view(-1, 1, 1)  #
 
-        xp = F.conv2d(input=x, weight=self.protolayer)  # (B, P, H, W)
+        # (B, P, H, W)
+        xp = F.conv2d(input=x, weight=self.protolayer, padding="same")
         intermediate_result = -2 * xp + p2_reshape
         distances = F.relu(x2_patch_sum + intermediate_result)
 
@@ -277,9 +298,6 @@ class ProtoAutoEncoderMnist(nn.Module):
                 p=2,
             ) / np.sqrt(self.latent_dim)
         return prototype_distances
-
-    def get_prototypes(self):
-        return self.protolayer.squeeze()
 
     def distance_2_similarity(self, distances):
         if self.prototype_activation_function == "log":
@@ -367,11 +385,14 @@ class ProtoAutoEncoderMnist(nn.Module):
         optimizer: torch.optim.Optimizer,
         epoch: int,
         n_epoch: int,
+        start_push_epoch: int,
+        push_epoch_frequency: int,
+        freeze_epoch: int,
     ) -> np.ndarray:
         self.train()
         train_loss = []
         # Last five epochs only fit the decoder
-        if epoch >= n_epoch - 10:
+        if epoch > freeze_epoch:
             logging.info("Freeze Encoder and Prototypes")
             self.encoder.requires_grad = False
             self.protolayer.requires_grad = False
@@ -383,11 +404,16 @@ class ProtoAutoEncoderMnist(nn.Module):
             loss.backward()
             optimizer.step()
             train_loss.append(loss.detach().cpu().numpy())
-        if epoch % 10 == 0 and epoch >= 70:
+        if (
+            epoch % push_epoch_frequency == 0
+            and epoch >= start_push_epoch
+            and epoch <= freeze_epoch
+        ):
             # pass
             push_prototypes(
                 push_dataloader,
                 prototype_network=self,
+                pert=self.input_pert,
                 prototype_layer_stride=1,
                 root_dir_for_saving_prototypes=f"results/prototypes/{self.name}",
                 epoch_number=epoch,
@@ -419,6 +445,9 @@ class ProtoAutoEncoderMnist(nn.Module):
         save_dir: pathlib.Path,
         n_epoch: int = 30,
         patience: int = 10,
+        start_push_epoch: int = 15,
+        push_epoch_frequency: int = 10,
+        freeze_epoch: int = 14,
         checkpoint_interval: int = -1,
         lr: float = 1e-3,
     ) -> None:
@@ -429,7 +458,15 @@ class ProtoAutoEncoderMnist(nn.Module):
         best_test_loss = float("inf")
         for epoch in range(n_epoch):
             train_loss = self.train_epoch(
-                device, train_loader, train_push_loader, optim, epoch, n_epoch
+                device,
+                train_loader,
+                train_push_loader,
+                optim,
+                epoch,
+                n_epoch,
+                start_push_epoch,
+                push_epoch_frequency,
+                freeze_epoch,
             )
             test_loss = self.test_epoch(device, test_loader)
             logging.info(
