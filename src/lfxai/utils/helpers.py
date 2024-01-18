@@ -59,7 +59,13 @@ def find_high_activation_crop(activation_map, percentile=95):
 
 
 def visualize_image_grid(
-    preprocess_fn=None, images=None, titles=None, ncols=3, similarity_values=[]
+    preprocess_fn=None,
+    images=None,
+    titles=None,
+    ncols=3,
+    similarity_values=[],
+    save_img=False,
+    filename="prototypes",
 ):
     if titles:
         assert len(titles) == ncols
@@ -77,6 +83,9 @@ def visualize_image_grid(
 
         if i % ncols == 0:
             ax.set_title(f"Prototype {i+1} - Similarity: {val*100:.2f}%")
+
+    if save_img:
+        plt.savefig(f"{filename}.pdf")
 
 
 def plot_grid_on_image(img_variable, img_size, grid=7):

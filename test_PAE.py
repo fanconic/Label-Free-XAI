@@ -39,8 +39,8 @@ set_seed(42)
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
 # pert = Identity()
-# pert = RandomNoise(noise_level=0.3)
-pert = Mask(mask_proportion=0.2)
+pert = RandomNoise(noise_level=0.3)
+# pert = Mask(mask_proportion=0.2)
 
 model_name = "ProtoAE_inpainting_2"
 
@@ -66,7 +66,6 @@ random_seed = 42
 torch.random.manual_seed(random_seed)
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 W = 28  # Image width = height
-pert_percentages = [5, 10, 20, 50, 80, 100]
 
 # Load MNIST
 data_dir = Path.cwd() / "data/mnist"

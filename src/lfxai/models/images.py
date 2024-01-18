@@ -49,34 +49,21 @@ class EncoderMnist(nn.Module):
             nn.Conv2d(8, 16, 3, stride=2, padding=1),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
-            nn.Conv2d(16, 32, 3, stride=2, padding=0),
+            nn.Conv2d(16, encoded_space_dim, 3, stride=1, padding=0),
             nn.ReLU(True),
-        )
-        self.flatten = nn.Flatten(start_dim=1)
-        self.encoder_lin = nn.Sequential(
-            nn.Linear(3 * 3 * 32, 128), nn.ReLU(True), nn.Linear(128, encoded_space_dim)
         )
         self.encoded_space_dim = encoded_space_dim
 
     def forward(self, x):
         x = self.encoder_cnn(x)
-        x = self.flatten(x)
-        x = self.encoder_lin(x)
         return x
 
 
 class DecoderMnist(nn.Module):
     def __init__(self, encoded_space_dim):
         super().__init__()
-        self.decoder_lin = nn.Sequential(
-            nn.Linear(encoded_space_dim, 128),
-            nn.ReLU(True),
-            nn.Linear(128, 3 * 3 * 32),
-            nn.ReLU(True),
-        )
-        self.unflatten = nn.Unflatten(dim=1, unflattened_size=(32, 3, 3))
         self.decoder_conv = nn.Sequential(
-            nn.ConvTranspose2d(32, 16, 3, stride=2, output_padding=0),
+            nn.ConvTranspose2d(encoded_space_dim, 16, 3, stride=1, output_padding=0),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
             nn.ConvTranspose2d(16, 8, 3, stride=2, padding=1, output_padding=1),
@@ -86,8 +73,6 @@ class DecoderMnist(nn.Module):
         )
 
     def forward(self, x):
-        x = self.decoder_lin(x)
-        x = self.unflatten(x)
         x = self.decoder_conv(x)
         x = torch.sigmoid(x)
         return x
@@ -116,19 +101,13 @@ class ProtoDecoderMnist(nn.Module):
     def __init__(self, encoded_space_dim):
         super().__init__()
         self.decoder_conv = nn.Sequential(
-            nn.ConvTranspose2d(
-                encoded_space_dim, 16, 3, stride=1, output_padding=0
-            ),
+            nn.ConvTranspose2d(encoded_space_dim, 16, 3, stride=1, output_padding=0),
             nn.BatchNorm2d(16),
             nn.ReLU(True),
-            nn.ConvTranspose2d(
-                16, 8, 3, stride=2, padding=1, output_padding=1
-            ),
+            nn.ConvTranspose2d(16, 8, 3, stride=2, padding=1, output_padding=1),
             nn.BatchNorm2d(8),
             nn.ReLU(True),
-            nn.ConvTranspose2d(
-                8, 1, 3, stride=2, padding=1, output_padding=1
-            ),
+            nn.ConvTranspose2d(8, 1, 3, stride=2, padding=1, output_padding=1),
         )
 
     def forward(self, x):
@@ -279,24 +258,6 @@ class ProtoAutoEncoderMnist(nn.Module):
             prototype_distances = self._cosine_convolution(x)
         elif self.metric == "l2":
             prototype_distances = self._l2_convolution(x)
-        return prototype_distances
-
-    def compute_distances_2(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute the similarity scores between the latent encoded image and the prototypes
-
-        Parameters:
-        -----------
-        x : torch.Tensor
-            Batch of data. Shape (batch_size, latent_dim, height, width)
-        """
-        if self.metric == "cosine":
-            prototype_distances = self._cosine_convolution(x)
-        elif self.metric == "l2":
-            prototype_distances = torch.cdist(
-                x.view(x.size(0), -1),
-                self.protolayer.view(self.protolayer.size(0), -1),
-                p=2,
-            ) / np.sqrt(self.latent_dim)
         return prototype_distances
 
     def distance_2_similarity(self, distances):
@@ -473,18 +434,19 @@ class ProtoAutoEncoderMnist(nn.Module):
                 f"Epoch {epoch + 1}/{n_epoch} \t "
                 f"Train loss {train_loss:.3g} \t Test loss {test_loss:.3g} \t "
             )
-            if test_loss >= best_test_loss:
-                waiting_epoch += 1
-                logging.info(
-                    f"No improvement over the best epoch \t Patience {waiting_epoch} / {patience}"
-                )
-            else:
+            if test_loss < best_test_loss and epoch > freeze_epoch:
                 logging.info(f"Saving the model in {save_dir}")
                 self.cpu()
                 self.save(save_dir)
                 self.to(device)
                 best_test_loss = test_loss.data
                 waiting_epoch = 0
+            else:
+                waiting_epoch += 1
+                logging.info(
+                    f"No improvement over the best epoch \t Patience {waiting_epoch} / {patience}"
+                )
+
             if checkpoint_interval > 0 and epoch % checkpoint_interval == 0:
                 n_checkpoint = 1 + epoch // checkpoint_interval
                 logging.info(f"Saving checkpoint {n_checkpoint} in {save_dir}")
