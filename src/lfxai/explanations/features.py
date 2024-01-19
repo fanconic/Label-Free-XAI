@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from captum.attr import Attribution, Saliency
 from torch.nn import Module
+import torch.nn.functional as F
+import cv2
 
 
 class AuxiliaryFunction(Module):
@@ -88,4 +90,49 @@ def attribute_auxiliary(
                 attributions.append(
                     attr_method.attribute(inputs).detach().cpu().numpy()
                 )
+    return np.concatenate(attributions)
+
+
+def proto_attribute(
+    ppnet: Module,
+    data_loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    pert=None,
+    top_k_weights=10,
+) -> np.ndarray:
+    attributions = []
+    for inputs, _ in data_loader:
+        inputs = pert(inputs).to(device)
+
+        # Forward the image variable through the network
+        _, distances = ppnet.push_forward(inputs)
+        activation_pattern = ppnet.distance_2_similarity(distances)
+        activation_pattern = activation_pattern.detach().numpy()
+
+        _, min_distances = ppnet(inputs)
+        prototype_activations = (
+            F.softmax(ppnet.distance_2_similarity(min_distances), dim=1)
+            .detach()
+            .numpy()
+        )
+
+        for img, weights in zip(activation_pattern, prototype_activations):
+            # sort and take weighted average of top K prototypes
+            sorted_weights = np.argsort(weights)
+            filter = (weights >= weights[sorted_weights[-top_k_weights]]).astype(float)
+            filtered_weights = filter * weights
+            feature_importance = np.einsum("i,ikl->kl", filtered_weights, img)
+            feature_importance_upsampled = cv2.resize(
+                feature_importance,
+                dsize=(28, 28),
+                interpolation=cv2.INTER_CUBIC,
+            )
+
+            """feature_importance_upsampled_scaled = (
+                feature_importance_upsampled - feature_importance_upsampled.min()
+            ) / (
+                feature_importance_upsampled.max() - feature_importance_upsampled.min()
+            )"""
+            attributions.append(feature_importance_upsampled.reshape(1, 1, 28, 28))
+
     return np.concatenate(attributions)

@@ -177,6 +177,31 @@ class ProtoAutoEncoderMnist(nn.Module):
             torch.rand((self.d_prototypes, self.d_prototypes, 5, 5)), requires_grad=True
         )
 
+    def get_representations(self, x) -> torch.Tensor:
+        """Returns the latent representation of the PAE, that is a weighted sum of the
+            latent representations of training patches
+
+        Args:
+            x (torch.Tensor): input image
+        """
+        if self.training:
+            x = self.input_pert(x)
+        x = self.encoder(x)
+        distances = self.compute_distances(x)
+        min_distances = -F.max_pool2d(
+            -distances, kernel_size=(distances.size()[2], distances.size()[3])
+        )
+        min_distances = min_distances.view(-1, self.n_prototypes)
+        prototype_activations = self.distance_2_similarity(min_distances)
+
+        # the new latent variable is a weighted sum of the existing prototypes
+        # the weights are determined by the similarity to the prototypes
+        z = torch.einsum(
+            "ij,jklm->iklm", F.softmax(prototype_activations, dim=1), self.protolayer
+        )
+
+        return z.flatten(1)
+
     def forward(self, x) -> Tuple[torch.Tensor]:
         """Forward pass of model. decoded image is based on similarities from the prototypes
 
@@ -376,7 +401,7 @@ class ProtoAutoEncoderMnist(nn.Module):
                 prototype_network=self,
                 pert=self.input_pert,
                 prototype_layer_stride=1,
-                root_dir_for_saving_prototypes=f"results/prototypes/{self.name}",
+                root_dir_for_saving_prototypes=f"{self.save_dir}/prototypes",
                 epoch_number=epoch,
                 prototype_img_filename_prefix="prototype-img",
                 prototype_self_act_filename_prefix="prototype-self-act",
@@ -414,6 +439,7 @@ class ProtoAutoEncoderMnist(nn.Module):
     ) -> None:
         self.to(device)
         self.lr = lr
+        self.save_dir = save_dir
         optim = torch.optim.Adam(self.parameters(), lr=self.lr, weight_decay=1e-05)
         waiting_epoch = 0
         best_test_loss = float("inf")
