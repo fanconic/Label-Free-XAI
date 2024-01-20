@@ -3,7 +3,7 @@ import logging
 import math
 import pathlib
 from pathlib import Path
-from typing import Tuple
+from typing import Callable, Tuple
 
 import hydra
 import numpy as np
@@ -183,6 +183,9 @@ class ProtoAutoEncoderMnist(nn.Module):
 
         Args:
             x (torch.Tensor): input image
+
+        returns:
+            the flattened latent representation
         """
         if self.training:
             x = self.input_pert(x)
@@ -201,6 +204,27 @@ class ProtoAutoEncoderMnist(nn.Module):
         )
 
         return z.flatten(1)
+
+    def get_importances(self, x) -> torch.Tensor:
+        """Returns the importance from every prototype for this prediction
+            after going through a softmax activation
+
+        Args:
+            x (torch.Tensor): input image
+
+        returns:
+            the normalised contribution of every prototype to the latent dimension
+        """
+        if self.training:
+            x = self.input_pert(x)
+        x = self.encoder(x)
+        distances = self.compute_distances(x)
+        min_distances = -F.max_pool2d(
+            -distances, kernel_size=(distances.size()[2], distances.size()[3])
+        )
+        min_distances = min_distances.view(-1, self.n_prototypes)
+        prototype_activations = self.distance_2_similarity(min_distances)
+        return F.softmax(prototype_activations, dim=1)
 
     def forward(self, x) -> Tuple[torch.Tensor]:
         """Forward pass of model. decoded image is based on similarities from the prototypes
@@ -484,6 +508,27 @@ class ProtoAutoEncoderMnist(nn.Module):
             if waiting_epoch == patience:
                 logging.info("Early stopping activated")
                 break
+
+    def get_prototype_importance(
+        self,
+        loader: torch.utils.data.DataLoader,
+    ) -> np.ndarray:
+        """Returns the importance of each prototype in the loader
+
+        Args:
+            loader (DataLoader): a Datalaoder with N datapoints
+            pert (Callable): perturbation on the images
+
+        Returns:
+            array of prototype importances for every prediction [N, n_prototypes]
+        """
+        importances = []
+        for img, _ in loader:
+            input_img = self.input_pert(img)
+            prototype_importances = self.get_importances(input_img)
+            importances.append(prototype_importances.detach().numpy())
+
+        return np.vstack(importances)
 
     def save(self, directory: pathlib.Path) -> None:
         """Save a model and corresponding metadata.

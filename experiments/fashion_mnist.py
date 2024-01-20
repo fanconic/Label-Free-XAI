@@ -245,9 +245,9 @@ def proto_consistency_feature_importance(
     protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
     protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
 
-    n_prototypes = 256
+    n_prototypes = 128
     pae_model_name = f"PAE_denoising_{n_prototypes}"
-    run = 0
+    run = 4
 
     # Initialize normal encoder, decoder and autoencoder wrapper
     protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)

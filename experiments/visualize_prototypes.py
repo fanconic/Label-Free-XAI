@@ -62,9 +62,7 @@ def visualize_predictive_performance(
             data_dir, train=False, download=True
         )
     elif dataset.lower() == "mnist":
-        test_dataset = torchvision.datasets.FashionMNIST(
-            data_dir, train=False, download=True
-        )
+        test_dataset = torchvision.datasets.MNIST(data_dir, train=False, download=True)
     else:
         raise ValueError("Dataset does not exist")
 

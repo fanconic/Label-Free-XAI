@@ -55,6 +55,7 @@ from src.lfxai.utils.metrics import (
     count_activated_neurons,
     entropy_saliency,
     pearson_saliency,
+    proto_similarity_rates,
     similarity_rates,
     spearman_saliency,
 )
@@ -272,9 +273,9 @@ def proto_consistency_feature_importance(
     protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
     protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
 
-    n_prototypes = 256
+    n_prototypes = 128
     pae_model_name = f"PAE_denoising_{n_prototypes}"
-    run = 0
+    run = 4
 
     # Initialize normal encoder, decoder and autoencoder wrapper
     protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
@@ -446,6 +447,103 @@ def consistency_feature_importance(
     plt.tight_layout()
     plt.savefig(save_dir / "mnist_consistency_features.pdf")
     plt.close()
+
+
+def proto_consistency_examples(
+    random_seed: int = 42,
+    batch_size: int = 200,
+    dim_latent: int = 32,
+) -> None:
+    # Initialize seed and device
+    set_seed(random_seed)
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    # Load MNIST
+    data_dir = Path.cwd() / "data/mnist"
+    test_dataset = torchvision.datasets.MNIST(data_dir, train=False, download=True)
+    test_transform = transforms.Compose([transforms.ToTensor()])
+    test_dataset.transform = test_transform
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False
+    )
+
+    # Initialize encoder, decoder and autoencoder wrapper
+    pert = RandomNoise()
+    protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+    protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
+
+    n_prototypes = 128
+    pae_model_name = f"PAE_denoising_{n_prototypes}"
+    run = 4
+
+    # Initialize normal encoder, decoder and autoencoder wrapper
+    protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+    protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
+    protoautoencoder = ProtoAutoEncoderMnist(
+        protoncoder,
+        protodecoder,
+        prototype_shape=(n_prototypes, dim_latent, 1, 1),
+        input_pert=pert,
+        name=pae_model_name + f"_run{run}",
+        metric="l2",
+        prototype_activation_function="log",
+    )
+    protoautoencoder.to(device)
+
+    load_dir = Path.cwd() / f"results/mnist/predictive_performance/{pae_model_name}"
+    protoautoencoder.eval()
+    protoautoencoder.load_state_dict(
+        torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
+    )
+
+    idx_subtest = [
+        torch.nonzero(test_dataset.targets == (n % 10))[n // 10].item()
+        for n in range(1000)
+    ]
+
+    subtest_loader = DataLoader(test_dataset)
+    labels_subtest = torch.cat([label for _, label in subtest_loader])
+
+    n_top_list = [1, 2, 5, 10, 20, 30, 40, 50, 80, 100, 128]
+    results_list = []
+    logging.info(f"Now fitting explainer")
+    attribution = protoautoencoder.get_prototype_importance(subtest_loader)
+
+    sim_most, sim_least = proto_similarity_rates(
+        attribution, labels_subtest, n_top_list
+    )
+    results_list += [
+        ["PAE", "Most Important", frac, sim] for frac, sim in zip(n_top_list, sim_most)
+    ]
+    results_list += [
+        ["PAE", "Least Important", frac, sim]
+        for frac, sim in zip(n_top_list, sim_least)
+    ]
+    results_df = pd.DataFrame(
+        results_list,
+        columns=[
+            "Explainer",
+            "Type of Examples",
+            "Prototypes removed",
+            "Similarity Rate",
+        ],
+    )
+
+    save_dir = Path.cwd() / "results/mnist/consistency_examples"
+    if not save_dir.exists():
+        os.makedirs(save_dir)
+
+    logging.info(f"Saving results in {save_dir}")
+    results_df.to_csv(save_dir / "metrics.csv")
+    sns.lineplot(
+        data=results_df,
+        x="Prototypes removed",
+        y="Similarity Rate",
+        hue="Explainer",
+        style="Type of Examples",
+        palette="colorblind",
+    )
+    plt.savefig(save_dir / "similarity_rates.pdf")
 
 
 def consistency_examples(
@@ -1028,5 +1126,7 @@ if __name__ == "__main__":
         )
     elif args.name == "proto_consistency_feature_importance":
         proto_consistency_feature_importance()
+    elif args.name == "proto_consistency_examples":
+        proto_consistency_examples()
     else:
         raise ValueError("Invalid experiment name")

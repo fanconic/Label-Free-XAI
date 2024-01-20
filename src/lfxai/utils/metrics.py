@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import torch
 from scipy.stats import entropy, spearmanr
 
@@ -133,6 +134,57 @@ def similarity_rates(
         )[1]
         similarities_most = []
         similarities_least = []
+        for n in range(test_size):
+            most_important_labels = labels_subtrain[most_important_examples[n]]
+            least_important_labels = labels_subtrain[least_important_examples[n]]
+            similarities_most.append(
+                torch.count_nonzero(most_important_labels == labels_test[n]).item()
+                / n_top
+            )
+            similarities_least.append(
+                torch.count_nonzero(least_important_labels == labels_test[n]).item()
+                / n_top
+            )
+        result_most.append(np.mean(similarities_most))
+        result_least.append(np.mean(similarities_least))
+    return result_most, result_least
+
+
+def proto_similarity_rates(
+    example_importance: torch.Tensor,
+    labels_test: torch.Tensor,
+    n_top_list: list = [1, 2, 5, 10, 20, 30, 40, 50],
+) -> tuple:
+    """
+    Computes the similarity rate metric (see paper)
+    Args:
+        example_importance: attribution for each example
+        labels_subtrain: labels of the train examples
+        labels_test: labels of the test examples
+        n_top_list: number of training examples to consider per test example
+
+    Returns:
+        Similary rates of most and least important examples for each element in n_to_list
+    """
+    labels_subtrain = pd.read_csv(
+        "results/mnist/predictive_performance/PAE_denoising_128/prototypes/epoch-90/prototype_labels.csv"
+    )["Label"]
+
+    labels_subtrain = torch.Tensor(labels_subtrain.values)
+
+    test_size, subtrain_size = example_importance.shape
+    result_most = []
+    result_least = []
+    for n_top in n_top_list:
+        most_important_examples = torch.topk(torch.Tensor(example_importance), k=n_top)[
+            1
+        ]
+        least_important_examples = torch.topk(
+            torch.Tensor(example_importance), k=n_top, largest=False
+        )[1]
+        similarities_most = []
+        similarities_least = []
+
         for n in range(test_size):
             most_important_labels = labels_subtrain[most_important_examples[n]]
             least_important_labels = labels_subtrain[least_important_examples[n]]
