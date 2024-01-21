@@ -13,7 +13,7 @@ import pandas as pd
 import re
 import os
 import copy
-from src.lfxai.models.images import ProtoAutoEncoderMnist
+from src.lfxai.models.proto_network import ProtoAutoEncoderMnist
 
 from src.lfxai.utils.helpers import (
     makedir,
@@ -202,7 +202,7 @@ class LocalAnalysis(object):
                 6. Ground truth image
         """
         # How to save the images
-        specific_folder = self.save_analysis_path + "/" + img_name
+        specific_folder = self.save_analysis_path / img_name
         makedir(specific_folder)
 
         # Save activations
@@ -401,8 +401,8 @@ class LocalAnalysis(object):
                 target_img,
             ]
 
-        # Visualize Logs and Images
-        if show_images:
+            # Visualize Logs and Images
+
             display_titles = [
                 "Training Image from which \nprototype is taken",
                 "Prototype",
@@ -418,8 +418,11 @@ class LocalAnalysis(object):
                 titles=display_titles,
                 ncols=7,
                 similarity_values=similarity_values,
+                save_img=True,
+                filename=specific_folder / "combination",
             )
             plt.tight_layout()
+        if show_images:
             plt.show()
 
         return display_images

@@ -25,6 +25,9 @@ from src.lfxai.models.images import (
     AutoEncoderMnist,
     DecoderMnist,
     EncoderMnist,
+)
+
+from src.lfxai.models.proto_network import (
     ProtoEncoderMnist,
     ProtoDecoderMnist,
     ProtoAutoEncoderMnist,
@@ -282,7 +285,7 @@ def proto_consistency_feature_importance(
         attr_method = attr_methods[method_name]
         if attr_method is not None:
             attr = proto_attribute(
-                protoautoencoder, test_loader, device, pert, top_k_weights=10
+                protoautoencoder, test_loader, device, pert, top_k_weights=128
             )
         else:
             np.random.seed(random_seed)
