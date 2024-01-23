@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from captum.attr import Attribution, Saliency
 from torch.nn import Module
+import torch.nn.functional as F
+import cv2
 
 
 class AuxiliaryFunction(Module):
@@ -13,7 +15,9 @@ class AuxiliaryFunction(Module):
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
         if len(self.prediction) == len(input_features):
-            return torch.sum(self.prediction * self.black_box(input_features), dim=-1)
+            return torch.sum(
+                self.prediction * self.black_box(input_features), dim=-1
+            )  # This is the juicy part: g_x(x_tilde)
         elif len(input_features) % len(self.prediction) == 0:
             n_repeat = int(len(input_features) / len(self.prediction))
             return torch.sum(
@@ -87,3 +91,19 @@ def attribute_auxiliary(
                     attr_method.attribute(inputs).detach().cpu().numpy()
                 )
     return np.concatenate(attributions)
+
+
+def proto_attribute(
+    ppnet: Module,
+    data_loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    pert=None,
+    top_k_weights=10,
+) -> np.ndarray:
+    attributions = []
+    for inputs, _ in data_loader:
+        inputs = pert(inputs).to(device)
+
+        attributions.append(ppnet.get_feature_importance(inputs, top_k_weights))
+
+    return np.vstack(attributions)
