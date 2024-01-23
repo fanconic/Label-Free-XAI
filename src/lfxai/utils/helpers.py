@@ -82,9 +82,10 @@ def visualize_image_grid(
         plt.axis("off")
 
         if i % ncols == 0:
-            ax.set_title(f"Prototype {i+1} - Similarity: {val*100:.2f}%")
+            ax.set_title(f"Prototype {(i//ncols)+1} - Similarity: {val*100:.2f}%")
 
     if save_img:
+        plt.tight_layout()
         plt.savefig(f"{filename}.pdf")
 
 

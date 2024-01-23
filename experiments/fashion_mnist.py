@@ -8,7 +8,6 @@ from typing import List
 import sys
 from matplotlib import pyplot as plt
 
-
 sys.path.append(os.getcwd() + "/..")
 
 import numpy as np
@@ -28,10 +27,15 @@ from src.lfxai.models.images import (
 )
 
 from src.lfxai.models.proto_network import (
+    ProtoClassifierMnist,
     ProtoEncoderMnist,
     ProtoDecoderMnist,
     ProtoAutoEncoderMnist,
 )
+from src.lfxai.models.local_analysis import LocalAnalysis
+
+from src.lfxai.utils.visualize import correlation_latex_table
+from scipy.stats import spearmanr
 
 from src.lfxai.models.pretext import Identity, Mask, RandomNoise
 
@@ -113,7 +117,7 @@ def predictive_performance_and_ablation(
     train_loader = DataLoader(train_subset, batch_size=batch_size)
     train_push_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     perturbations = {
         "reconstruction": Identity(),
@@ -329,6 +333,279 @@ def proto_consistency_feature_importance(
     plt.close()
 
 
+def proto_pretext_task_sensitivity(
+    random_seed: int = 1,
+    batch_size: int = 200,
+    n_runs: int = 5,
+    dim_latent: int = 32,
+    subtrain_size: int = 1000,
+    n_plots: int = 10,
+    n_prototypes: int = 128,
+) -> None:
+    """Pretext experiment, adapted to the PAE model
+
+    Args:
+        random_seed (int): set random seed
+        batch_size (int): size of the batches
+        n_runs: number of runs (model has been previously trained - only testing)
+        dim_latent (int): dimension size of the latent representation
+        subtrain_size (int): size of the training subpart
+        n_plots: number of qualitative plots generated
+        n_prototypes: numbers of prototypes
+
+    Returns:
+        None
+    """
+    # Initialize seed and device
+    set_seed(random_seed[0])
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    ce_loss = torch.nn.CrossEntropyLoss()
+    mse_loss = torch.nn.MSELoss()
+
+    # Load MNIST
+    W = 28
+    data_dir = Path.cwd() / "data/mnist"
+    train_dataset = torchvision.datasets.FashionMNIST(
+        data_dir, train=True, download=True
+    )
+    test_dataset = torchvision.datasets.FashionMNIST(
+        data_dir, train=False, download=True
+    )
+    train_transform = transforms.Compose([transforms.ToTensor()])
+    test_transform = transforms.Compose([transforms.ToTensor()])
+    train_dataset.transform = train_transform
+    test_dataset.transform = test_transform
+
+    train_subset = Subset(train_dataset, indices=list(range(5000)))
+    val_subset = Subset(train_dataset, indices=list(range(5000, 5000 + 1000)))
+    test_subset = Subset(test_dataset, indices=list(range(1000)))
+
+    train_loader = DataLoader(train_subset, batch_size=batch_size)
+    train_push_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
+
+    X_train = train_dataset.data
+    X_train = X_train.unsqueeze(1).float()
+    X_test = test_dataset.data
+    X_test = X_test.unsqueeze(1).float()
+    idx_subtrain = [
+        torch.nonzero(train_dataset.targets == (n % 10))[n // 10].item()
+        for n in range(subtrain_size)
+    ]
+
+    # Create saving directory
+    save_dir = Path.cwd() / "results/fashion_mnist/pretext"
+    if not save_dir.exists():
+        logging.info(f"Creating saving directory {save_dir}")
+        os.makedirs(save_dir)
+
+    # Define the computed metrics and create a csv file with appropriate headers
+    pretext_dict = {
+        "reconstruction": Identity(),
+        "denoising": RandomNoise(noise_level=0.3),
+        "inpainting": Mask(mask_proportion=0.2),
+    }
+    headers = [pretext.title() for pretext in pretext_dict.keys()] + [
+        "Classification"
+    ]  # Name of each task
+    n_tasks = len(pretext_dict) + 1
+    feature_pearson = np.zeros((n_runs, n_tasks, n_tasks))
+    feature_spearman = np.zeros((n_runs, n_tasks, n_tasks))
+    example_pearson = np.zeros((n_runs, n_tasks, n_tasks))
+    example_spearman = np.zeros((n_runs, n_tasks, n_tasks))
+
+    for run in range(n_runs):
+        set_seed(random_seed[run])
+        feature_importance = []
+        example_importance = []
+        # Perform the experiment with several autoencoders trained on different pretext tasks.
+        for pretext_name, pretext in pretext_dict.items():
+            # load autoencoder for the pretext task
+            pae_model_name = f"PAE_{pretext_name}_{n_prototypes}"
+            load_dir = (
+                Path.cwd()
+                / f"results/fashion_mnist/predictive_performance/{pae_model_name}"
+            )
+            protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+            protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
+            protoautoencoder = ProtoAutoEncoderMnist(
+                protoncoder,
+                protodecoder,
+                prototype_shape=(n_prototypes, dim_latent, 1, 1),
+                input_pert=pretext,
+                name=pae_model_name + f"_run{run}",
+                metric="l2",
+                prototype_activation_function="log",
+            )
+            protoautoencoder.to(device)
+            logging.info(f"Now loading {protoautoencoder.name}")
+            protoautoencoder.load_state_dict(
+                torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
+            )
+
+            # Compute feature importance
+            logging.info("Computing feature importance")
+            baseline_image = torch.zeros((1, 1, 28, 28), device=device)
+            feature_importance.append(
+                # np.abs(
+                np.expand_dims(
+                    proto_attribute(
+                        protoautoencoder,
+                        test_loader,
+                        device,
+                        pretext,
+                        top_k_weights=n_prototypes,
+                    ),
+                    0,
+                )
+                # )
+            )
+            # Compute example importance
+            logging.info("Computing example importance")
+            example_importance.append(
+                np.expand_dims(
+                    protoautoencoder.get_prototype_importances(test_loader), 0
+                )
+            )
+
+            if run == 4:
+                logging.info("Saving plots")
+                freeze_epoch = 90
+                prototypes_dir = (
+                    Path.cwd()
+                    / f"results/fashion_mnist/predictive_performance/prototypes/{pae_model_name}_run{run}"
+                )
+                prototype_img_save_dir = (
+                    prototypes_dir / f"epoch-{freeze_epoch}-visualize"
+                )
+
+                ii = 0
+                sample_loader = DataLoader(test_subset, batch_size=1, shuffle=False)
+                for img, _ in sample_loader:
+                    input_img = pretext(torch.Tensor(img))
+                    output_img, _ = protoautoencoder(input_img)
+                    mse = mse_loss(img, output_img).mean()
+                    if mse < 0.02:
+                        ii += 1
+                        loc_analysis = LocalAnalysis(
+                            protoautoencoder,
+                            prototypes_dir,
+                            epoch_number=freeze_epoch,
+                            image_save_directory=prototype_img_save_dir,
+                        )
+
+                        loc_analysis.visualization(
+                            input_img,
+                            prototypes_dir / f"test_img_{ii}",
+                            torch.Tensor(img),
+                            show_images=False,
+                            max_prototypes=5,
+                        )
+
+                        if ii == 9:
+                            break
+
+        # Create and fit a MNIST classifier
+        classifier_name = f"classifier_{n_prototypes}"
+        protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+        protoclassifier = ProtoClassifierMnist(
+            protoncoder,
+            prototype_shape=(n_prototypes, dim_latent, 1, 1),
+            name=classifier_name + f"_run{run}",
+            metric="l2",
+            prototype_activation_function="log",
+            loss_f=ce_loss,
+            n_classes=10,
+        )
+        logging.info(f"Now fitting {classifier_name}")
+        protoclassifier.fit(
+            device,
+            train_loader,
+            train_push_loader,
+            val_loader,
+            save_dir,
+            100,
+            patience=100,
+            lr=1e-3,
+            start_push_epoch=70,
+            push_epoch_frequency=10,
+            freeze_epoch=90,
+        )
+        protoclassifier.load_state_dict(
+            torch.load(save_dir / (protoclassifier.name + ".pt")), strict=False
+        )
+
+        # Compute feature importance for the classifier
+        logging.info("Computing feature importance")
+        feature_importance.append(
+            # np.abs(
+            np.expand_dims(
+                proto_attribute(
+                    protoclassifier,
+                    test_loader,
+                    device,
+                    pretext,
+                    top_k_weights=n_prototypes,
+                ),
+                0,
+            )
+            # )
+        )
+        # Compute example importance for the classifier
+        logging.info("Computing example importance")
+        example_importance.append(
+            np.expand_dims(protoautoencoder.get_prototype_importances(test_loader), 0)
+        )
+
+        # Compute correlation between the saliency of different pretext tasks
+        feature_importance = np.concatenate(feature_importance)
+        feature_pearson[run] = np.corrcoef(feature_importance.reshape((n_tasks, -1)))
+        feature_spearman[run] = spearmanr(
+            feature_importance.reshape((n_tasks, -1)), axis=1
+        )[0]
+        example_importance = np.concatenate(example_importance)
+        example_pearson[run] = np.corrcoef(example_importance.reshape((n_tasks, -1)))
+        example_spearman[run] = spearmanr(
+            example_importance.reshape((n_tasks, -1)), axis=1
+        )[0]
+        logging.info(
+            f"Run {run} complete \n Feature Pearson \n {np.round(feature_pearson[run], decimals=2)}"
+            f"\n Feature Spearman \n {np.round(feature_spearman[run], decimals=2)}"
+            f"\n Example Pearson \n {np.round(example_pearson[run], decimals=2)}"
+            f"\n Example Spearman \n {np.round(example_spearman[run], decimals=2)}"
+        )
+
+    # Compute the avg and std for each metric
+    feature_pearson_avg = np.round(np.mean(feature_pearson, axis=0), decimals=2)
+    feature_pearson_std = np.round(np.std(feature_pearson, axis=0), decimals=2)
+    feature_spearman_avg = np.round(np.mean(feature_spearman, axis=0), decimals=2)
+    feature_spearman_std = np.round(np.std(feature_spearman, axis=0), decimals=2)
+    example_pearson_avg = np.round(np.mean(example_pearson, axis=0), decimals=2)
+    example_pearson_std = np.round(np.std(example_pearson, axis=0), decimals=2)
+    example_spearman_avg = np.round(np.mean(example_spearman, axis=0), decimals=2)
+    example_spearman_std = np.round(np.std(example_spearman, axis=0), decimals=2)
+
+    # Format the metrics in Latex tables
+    with open(save_dir / "tables.tex", "w") as f:
+        for corr_avg, corr_std in zip(
+            [
+                feature_pearson_avg,
+                feature_spearman_avg,
+                example_pearson_avg,
+                example_spearman_avg,
+            ],
+            [
+                feature_pearson_std,
+                feature_spearman_std,
+                example_pearson_std,
+                example_spearman_std,
+            ],
+        ):
+            f.write(correlation_latex_table(corr_avg, corr_std, headers))
+            f.write("\n")
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -353,5 +630,9 @@ if __name__ == "__main__":
         )
     elif args.name == "proto_consistency_feature_importance":
         proto_consistency_feature_importance()
+    elif args.name == "proto_pretext_task_sensitivity":
+        proto_pretext_task_sensitivity(
+            n_runs=args.n_runs, batch_size=50, random_seed=[11, 19, 42, 69, 110]
+        )
     else:
         raise ValueError("Invalid experiment name")

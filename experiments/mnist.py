@@ -141,12 +141,12 @@ def predictive_performance_and_ablation(
 
     train_subset = Subset(train_dataset, indices=list(range(5000)))
     val_subset = Subset(train_dataset, indices=list(range(5000, 5000 + 1000)))
-    test_subset = Subset(test_dataset, indices=list(range(1000)))
+    # test_subset = Subset(test_dataset, indices=list(range(1000)))
 
     train_loader = DataLoader(train_subset, batch_size=batch_size)
     train_push_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     perturbations = {
         "reconstruction": Identity(),
@@ -887,7 +887,7 @@ def proto_pretext_task_sensitivity(
         None
     """
     # Initialize seed and device
-    set_seed(random_seed)
+    set_seed(random_seed[0])
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     ce_loss = torch.nn.CrossEntropyLoss()
     mse_loss = torch.nn.MSELoss()
@@ -942,6 +942,7 @@ def proto_pretext_task_sensitivity(
     example_spearman = np.zeros((n_runs, n_tasks, n_tasks))
 
     for run in range(n_runs):
+        set_seed(random_seed[run])
         feature_importance = []
         example_importance = []
         # Perform the experiment with several autoencoders trained on different pretext tasks.
@@ -1019,7 +1020,7 @@ def proto_pretext_task_sensitivity(
                         loc_analysis.visualization(
                             input_img,
                             save_dir / f"{pretext_name}/{pretext_name}_test_img_{ii}",
-                            input_img,
+                            torch.Tensor(img),
                             show_images=False,
                             max_prototypes=5,
                         )
@@ -1040,19 +1041,19 @@ def proto_pretext_task_sensitivity(
             n_classes=10,
         )
         logging.info(f"Now fitting {classifier_name}")
-        # protoclassifier.fit(
-        #     device,
-        #     train_loader,
-        #     train_push_loader,
-        #     val_loader,
-        #     save_dir,
-        #     100,
-        #     patience=100,
-        #     lr=1e-3,
-        #     start_push_epoch=70,
-        #     push_epoch_frequency=10,
-        #     freeze_epoch=90,
-        # )
+        protoclassifier.fit(
+            device,
+            train_loader,
+            train_push_loader,
+            val_loader,
+            save_dir,
+            100,
+            patience=100,
+            lr=1e-3,
+            start_push_epoch=70,
+            push_epoch_frequency=10,
+            freeze_epoch=90,
+        )
         protoclassifier.load_state_dict(
             torch.load(save_dir / (protoclassifier.name + ".pt")), strict=False
         )
@@ -1096,29 +1097,6 @@ def proto_pretext_task_sensitivity(
             f"\n Example Pearson \n {np.round(example_pearson[run], decimals=2)}"
             f"\n Example Spearman \n {np.round(example_spearman[run], decimals=2)}"
         )
-
-        # Plot a couple of examples
-        # idx_plot = [
-        #     torch.nonzero(test_dataset.targets == (n % 10))[n // 10].item()
-        #     for n in range(n_plots)
-        # ]
-        # test_images_to_plot = [X_test[i][0].numpy().reshape(W, W) for i in idx_plot]
-        # train_images_to_plot = [
-        #     X_train[i][0].numpy().reshape(W, W) for i in idx_subtrain
-        # ]
-        # fig_features = plot_pretext_saliencies(
-        #     test_images_to_plot, feature_importance[:, idx_plot, :, :, :], headers
-        # )
-        # fig_features.savefig(save_dir / f"saliency_maps_run{run}.pdf")
-        # plt.close(fig_features)
-        # fig_examples = plot_pretext_top_example(
-        #     train_images_to_plot,
-        #     test_images_to_plot,
-        #     example_importance[:, idx_plot, :],
-        #     headers,
-        # )
-        # fig_examples.savefig(save_dir / f"top_examples_run{run}.pdf")
-        # plt.close(fig_features)
 
     # Compute the avg and std for each metric
     feature_pearson_avg = np.round(np.mean(feature_pearson, axis=0), decimals=2)
@@ -1420,7 +1398,7 @@ if __name__ == "__main__":
         proto_consistency_examples()
     elif args.name == "proto_pretext_task_sensitivity":
         proto_pretext_task_sensitivity(
-            n_runs=args.n_runs, batch_size=50, random_seed=args.random_seed
+            n_runs=args.n_runs, batch_size=50, random_seed=[11, 19, 42, 69, 110]
         )
     else:
         raise ValueError("Invalid experiment name")
