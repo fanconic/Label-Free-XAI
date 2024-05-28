@@ -19,6 +19,8 @@ from tqdm import tqdm
 from src.lfxai.models.losses import BaseVAELoss
 from src.lfxai.utils.datasets import CIFAR10Pair
 from src.lfxai.utils.metrics import AverageMeter
+from lfxai.models.pretext import Identity
+
 
 """
  These models are adapted from
@@ -1192,3 +1194,251 @@ def log_density_gaussian(x: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor
     norm = -0.5 * (math.log(2 * math.pi) + logvar)
     log_density = norm - 0.5 * ((x - mu) ** 2 * torch.exp(-logvar))
     return log_density
+
+
+from src.lfxai.utils.receptive_field import compute_proto_layer_rf_info_v2
+from src.lfxai.models.push import push_prototypes
+
+class ProtoSimCLR(nn.Module):
+    def __init__(self, 
+                 base_encoder,
+                 prototype_shape: Tuple[int],
+                 projection_dim=128):
+        super().__init__()
+        self.encoder = base_encoder(
+            pretrained=True
+        )  # load model from torchvision.models without pretrained weights.
+        self.feature_dim = self.encoder.fc.in_features
+        
+        self.n_prototypes = prototype_shape[0]
+        self.d_prototypes = prototype_shape[1]
+
+        # Customize for CIFAR10. Replace conv 7x7 with conv 3x3, and remove first max pooling.
+        # See Section B.9 of SimCLR paper.
+        self.encoder.conv1 = nn.Conv2d(3, 64, 3, 1, 1, bias=False)
+        self.encoder.maxpool = nn.Identity()
+        self.encoder.fc = nn.Identity()  # remove final fully connected layer.
+        
+        self.proto_layer_rf_info = compute_proto_layer_rf_info_v2(
+            img_size=32,
+            layer_filter_sizes=[3, 3, 3],
+            layer_strides=[2, 2, 1],
+            layer_paddings=[1, 1, 0],
+            prototype_kernel_size=prototype_shape[2],
+        )
+
+        # Prototype Layer:
+        self.protolayer = nn.Parameter(
+            torch.rand(self.prototype_shape), requires_grad=True
+        )
+        self.ones = nn.Parameter(torch.ones(self.prototype_shape), requires_grad=False)
+
+        self.up_layer = nn.Sequential(
+            nn.ConvTranspose2d(self.d_prototypes, self.d_prototypes, 5),
+            nn.BatchNorm2d(self.d_prototypes),
+            nn.ReLU(True),
+        )
+
+
+    def forward(self, x):
+        x = self.encoder(x)
+        
+        distances = self.compute_distances(x)
+        # global min pooling
+        min_distances = -F.max_pool2d(
+            -distances, kernel_size=(distances.size()[2], distances.size()[3])
+        )
+        min_distances = min_distances.view(-1, self.n_prototypes)
+        prototype_activations = self.distance_2_similarity(min_distances)
+
+        # the new latent variable is a weighted sum of the existing prototypes
+        # the weights are determined by the similarity to the prototypes
+        z = torch.einsum(
+            "ij,jklm->iklm", F.softmax(prototype_activations, dim=1), self.protolayer
+        )
+
+        # upscale image
+        z = self.up_layer(z)
+        return z, min_distances
+    
+    def compute_distances(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the similarity scores between the latent encoded image and the prototypes
+
+        Parameters:
+        -----------
+        x : torch.Tensor
+            Batch of data. Shape (batch_size, latent_dim, height, width)
+        """
+        if self.metric == "cosine":
+            prototype_distances = self._cosine_convolution(x)
+        elif self.metric == "l2":
+            prototype_distances = self._l2_convolution(x)
+        return prototype_distances
+    
+    def distance_2_similarity(self, distances):
+        if self.prototype_activation_function == "log":
+            return torch.log((distances + 1) / (distances + self.epsilon))
+        elif self.prototype_activation_function == "linear":
+            return -distances
+        else:
+            return NotImplementedError
+        
+    def _l2_convolution(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply self.protolayer as l2-convolution filters on input x"""
+        x2 = x**2
+        # (B, P, H, W)
+        x2_patch_sum = F.conv2d(input=x2, weight=self.ones, padding="same")
+
+        p2 = self.protolayer**2
+        p2 = torch.sum(p2, dim=(1, 2, 3))
+        p2_reshape = p2.view(-1, 1, 1)  #
+
+        # (B, P, H, W)
+        xp = F.conv2d(input=x, weight=self.protolayer, padding="same")
+        intermediate_result = -2 * xp + p2_reshape
+        distances = F.relu(x2_patch_sum + intermediate_result)
+
+        return distances  # (B, P, H, W)
+    
+    def push_forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
+        """this method is needed for the pushing operation"""
+        conv_output = self.encoder(x)
+        distances = self.compute_distances(conv_output)
+        return conv_output, distances
+
+
+    @staticmethod
+    def nt_xent(x, t=0.5):
+        x = F.normalize(x, dim=1)
+        x_scores = (x @ x.t()).clamp(min=1e-7)  # normalized cosine similarity scores
+        x_scale = x_scores / t  # scale with temperature
+
+        # (2N-1)-way softmax without the score of i-th entry itself.
+        # Set the diagonals to be large negative values, which become zeros after softmax.
+        x_scale = x_scale - torch.eye(x_scale.size(0)).to(x_scale.device) * 1e5
+
+        # targets 2N elements.
+        targets = torch.arange(x.size()[0])
+        targets[::2] += 1  # target of 2k element is 2k+1
+        targets[1::2] -= 1  # target of 2k+1 element is 2k
+        return F.cross_entropy(x_scale, targets.long().to(x_scale.device))
+
+    @staticmethod
+    def get_lr(step, total_steps, lr_max, lr_min):
+        """Compute learning rate according to cosine annealing schedule."""
+        return lr_min + (lr_max - lr_min) * 0.5 * (
+            1 + np.cos(step / total_steps * np.pi)
+        )
+
+    # color distortion composed by color jittering and color dropping.
+    @staticmethod
+    def get_color_distortion(s=0.5):  # 0.5 for CIFAR10 by default
+        # s is the strength of color distortion
+        color_jitter = transforms.ColorJitter(0.8 * s, 0.8 * s, 0.8 * s, 0.2 * s)
+        rnd_color_jitter = transforms.RandomApply([color_jitter], p=0.8)
+        rnd_gray = transforms.RandomGrayscale(p=0.2)
+        color_distort = transforms.Compose([rnd_color_jitter, rnd_gray])
+        return color_distort
+
+    def fit(self, args: DictConfig, device: torch.device) -> None:
+        logger = logging.getLogger(__name__)
+
+        train_transform = transforms.Compose(
+            [
+                transforms.RandomResizedCrop(32),
+                transforms.RandomHorizontalFlip(p=0.5),
+                self.get_color_distortion(s=0.5),
+                transforms.ToTensor(),
+            ]
+        )
+        data_dir = hydra.utils.to_absolute_path(
+            args.data_dir
+        )  # get absolute path of data dir
+        train_set = CIFAR10Pair(
+            root=data_dir, train=True, transform=train_transform, download=True
+        )
+
+        train_loader = DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.workers,
+            drop_last=True,
+        )
+        
+        push_dataloader = DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.workers,
+            drop_last=False,
+        )
+
+        optimizer = torch.optim.SGD(
+            self.parameters(),
+            args.learning_rate,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=True,
+        )
+
+        # cosine annealing lr
+        scheduler = LambdaLR(
+            optimizer,
+            lr_lambda=lambda step: self.get_lr(  # pylint: disable=g-long-lambda
+                step,
+                args.epochs * len(train_loader),
+                args.learning_rate,  # lr_lambda computes multiplicative factor
+                1e-3,
+            ),
+        )
+
+        # SimCLR training
+        self.train()
+        for epoch in range(1, args.epochs + 1):
+            loss_meter = AverageMeter("SimCLR_loss")
+            train_bar = tqdm(train_loader)
+            for x, y in train_bar:
+                sizes = x.size()
+                x = x.view(sizes[0] * 2, sizes[2], sizes[3], sizes[4]).to(device)
+                optimizer.zero_grad()
+                feature, rep = self.forward(x)
+                loss = self.nt_xent(rep, args.temperature)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                loss_meter.update(loss.item(), x.size(0))
+                train_bar.set_description(
+                    f"Train epoch {epoch}, SimCLR loss: {loss_meter.avg:.4f}"
+                )
+
+            # save checkpoint very log_interval epochs
+            if epoch >= args.log_interval and epoch % args.log_interval == 0:
+                logger.info(
+                    "==> Save checkpoint. Train epoch {}, SimCLR loss: {:.4f}".format(
+                        epoch, loss_meter.avg
+                    )
+                )
+                torch.save(
+                    self.state_dict(),
+                    Path.cwd() / f"models/simclr_{args.backbone}_epoch{epoch}.pt",
+                )
+            
+            if (
+                epoch % args.push_epoch_frequency == 0
+                and epoch >= args.start_push_epoch
+                and epoch <= args.freeze_epoch
+            ):
+                # pass
+                push_prototypes(
+                    push_dataloader,
+                    prototype_network=self,
+                    pert=Identity(),
+                    prototype_layer_stride=1,
+                    root_dir_for_saving_prototypes=f"{self.save_dir}/prototypes/{self.name}",
+                    epoch_number=epoch,
+                    prototype_img_filename_prefix="prototype-img",
+                    prototype_self_act_filename_prefix="prototype-self-act",
+                    proto_bound_boxes_filename_prefix="bb",
+                    log=logging.info,
+                )

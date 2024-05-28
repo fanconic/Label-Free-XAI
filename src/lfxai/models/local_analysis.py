@@ -23,7 +23,7 @@ from src.lfxai.utils.helpers import (
 
 
 def save_preprocessed_img(fname, preprocessed_imgs, index=0, save=False):
-    img_copy = copy.deepcopy(preprocessed_imgs[index : index + 1].detach().numpy())
+    img_copy = copy.deepcopy(preprocessed_imgs[index : index + 1].cpu().detach().numpy())
     undo_preprocessed_img = img_copy
     print("image index {0} in batch".format(index))
     undo_preprocessed_img = undo_preprocessed_img[0]
@@ -316,6 +316,7 @@ class LocalAnalysis(object):
 
             activation_pattern = (
                 dict_prototype_activation_patterns[0][idx][inspected_index]
+                .cpu()
                 .detach()
                 .numpy()
             )

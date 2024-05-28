@@ -113,8 +113,8 @@ def predictive_performance_and_ablation(
     train_dataset.transform = train_transform
     test_dataset.transform = test_transform
 
-    train_subset = Subset(train_dataset, indices=list(range(5000)))
-    val_subset = Subset(train_dataset, indices=list(range(5000, 5000 + 1000)))
+    train_subset = Subset(train_dataset, indices=list(range(50000)))
+    val_subset = Subset(train_dataset, indices=list(range(50000, 50000 + 10000)))
     # test_subset = Subset(test_dataset, indices=list(range(1000)))
 
     train_loader = DataLoader(train_subset, batch_size=batch_size)
@@ -156,10 +156,13 @@ def predictive_performance_and_ablation(
             if not save_dir.exists():
                 print("making dir")
                 os.makedirs(save_dir)
-            logging.info("fitting AE")
-            autoencoder.fit(
-                device, train_loader, test_loader, save_dir, n_epochs, patience=20
-            )
+            if not Path(os.path.join(save_dir, ae_model_name + f"_run{i}.pt")).exists():
+                logging.info("fitting AE")
+                autoencoder.fit(
+                    device, train_loader, test_loader, save_dir, n_epochs, patience=20
+                )
+            else:
+                print(f"{save_dir} already exists, skip fitting model")
 
             # Testing
             autoencoder.eval()
@@ -194,26 +197,28 @@ def predictive_performance_and_ablation(
                 )
                 if not save_dir.exists():
                     os.makedirs(save_dir)
-                logging.info(f"fitting PAE with {n_prototypes} prototypes")
-                protoautoencoder.fit(
-                    device,
-                    train_loader,
-                    train_push_loader,
-                    val_loader,
-                    save_dir,
-                    n_epochs,
-                    patience=n_epochs,
-                    lr=1e-3,
-                    start_push_epoch=start_push_epoch,
-                    push_epoch_frequency=push_epoch_frequency,
-                    freeze_epoch=freeze_epoch,
-                )
-                protoautoencoder.eval()
-                protoautoencoder.load_state_dict(
-                    torch.load(save_dir / (protoautoencoder.name + ".pt")), strict=False
-                )
-                pae_loss = protoautoencoder.test_epoch(device, test_loader)
-                results_dict[pae_model_name].append(pae_loss)
+                if not Path(os.path.join(save_dir, pae_model_name + f"_run{i}.pt")).exists():
+                    
+                    logging.info(f"fitting PAE with {n_prototypes} prototypes")
+                    protoautoencoder.fit(
+                        device,
+                        train_loader,
+                        train_push_loader,
+                        val_loader,
+                        save_dir,
+                        n_epochs,
+                        patience=n_epochs,
+                        lr=1e-3,
+                        start_push_epoch=start_push_epoch,
+                        push_epoch_frequency=push_epoch_frequency,
+                        freeze_epoch=freeze_epoch,
+                    )
+                    protoautoencoder.eval()
+                    protoautoencoder.load_state_dict(
+                        torch.load(save_dir / (protoautoencoder.name + ".pt")), strict=False
+                    )
+                    pae_loss = protoautoencoder.test_epoch(device, test_loader)
+                    results_dict[pae_model_name].append(pae_loss)
 
     # Print results and save df
     for experiment_name, result_list in results_dict.items():
@@ -244,7 +249,7 @@ def proto_consistency_feature_importance(
     test_transform = transforms.Compose([transforms.ToTensor()])
     test_dataset.transform = test_transform
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False
+        test_dataset, batch_size=1, shuffle=False
     )
 
     # Initialize encoder, decoder and autoencoder wrapper
@@ -254,69 +259,75 @@ def proto_consistency_feature_importance(
 
     n_prototypes = 128
     pae_model_name = f"PAE_denoising_{n_prototypes}"
-    run = 4
+    runs = 5
 
-    # Initialize normal encoder, decoder and autoencoder wrapper
-    protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
-    protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
-    protoautoencoder = ProtoAutoEncoderMnist(
-        protoncoder,
-        protodecoder,
-        prototype_shape=(n_prototypes, dim_latent, 1, 1),
-        input_pert=pert,
-        name=pae_model_name + f"_run{run}",
-        metric="l2",
-        prototype_activation_function="log",
-    )
-    protoautoencoder.to(device)
-
-    load_dir = Path.cwd() / f"results/mnist/predictive_performance/{pae_model_name}"
-    protoautoencoder.eval()
-    protoautoencoder.load_state_dict(
-        torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
-    )
-
-    attr_methods = {
-        "PAE": protoautoencoder,
-        "Random": None,
-    }
+    
     results_data = []
-    for method_name in attr_methods:
-        logging.info(f"Computing feature importance with {method_name}")
-        results_data.append([method_name, 0, 0])
-        attr_method = attr_methods[method_name]
-        if attr_method is not None:
-            attr = proto_attribute(
-                protoautoencoder, test_loader, device, pert, top_k_weights=128
-            )
-        else:
-            np.random.seed(random_seed)
-            attr = np.random.randn(len(test_dataset), 1, W, W)
+    for run in range(runs):
+        
+        # Initialize normal encoder, decoder and autoencoder wrapper
+        protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+        protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
+        protoautoencoder = ProtoAutoEncoderMnist(
+            protoncoder,
+            protodecoder,
+            prototype_shape=(n_prototypes, dim_latent, 1, 1),
+            input_pert=pert,
+            name=pae_model_name + f"_run{run}",
+            metric="l2",
+            prototype_activation_function="log",
+        )
+        protoautoencoder.to(device)
 
-        for pert_percentage in pert_percentages:
-            logging.info(
-                f"Perturbing {pert_percentage}% of the features with {method_name}"
-            )
-            mask_size = int(pert_percentage * W**2 / 100)
-            masks = generate_masks(attr, mask_size)
-            for batch_id, (images, _) in enumerate(test_loader):
-                images = pert(images)
-                mask = masks[
-                    batch_id * batch_size : batch_id * batch_size + len(images)
-                ].to(device)
-                images = images.to(device)
-                original_reps = protoautoencoder.get_representations(images)
-                images = mask * images
-                pert_reps = protoautoencoder.get_representations(images).flatten(1)
-                rep_shift = torch.mean(
-                    torch.sum((original_reps - pert_reps) ** 2, dim=-1)
-                ).item()
-                results_data.append([method_name, pert_percentage, rep_shift])
+        load_dir = Path.cwd() / f"results/mnist/predictive_performance/{pae_model_name}"
+        protoautoencoder.eval()
+        protoautoencoder.load_state_dict(
+            torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
+        )
+
+        attr_methods = {
+            "PAE": protoautoencoder,
+            "Random": None,
+        }
+        
+        logging.info(f"Logging run {run}")
+        for method_name in attr_methods:
+            logging.info(f"Computing feature importance with {method_name}")
+            results_data.append([method_name, 0, 0])
+            attr_method = attr_methods[method_name]
+            if attr_method is not None:
+                attr = proto_attribute(
+                    protoautoencoder, test_loader, device, pert, top_k_weights=128
+                )
+            else:
+                np.random.seed(random_seed)
+                attr = np.random.randn(len(test_dataset), 1, W, W)
+
+            for pert_percentage in pert_percentages:
+                logging.info(
+                    f"Perturbing {pert_percentage}% of the features with {method_name}"
+                )
+                mask_size = int(pert_percentage * W**2 / 100)
+                masks = generate_masks(attr, mask_size)
+                for batch_id, (images, _) in enumerate(test_loader):
+                    images = pert(images)
+                    mask = masks[
+                        batch_id * batch_size : batch_id * batch_size + len(images)
+                    ].to(device)
+                    images = images.to(device)
+                    original_reps = protoautoencoder.get_representations(images)
+                    images = mask * images
+                    pert_reps = protoautoencoder.get_representations(images)
+                    rep_shift = torch.mean(
+                        torch.sum((original_reps - pert_reps) ** 2, dim=-1)
+                    ).item()
+                    results_data.append([method_name, pert_percentage, rep_shift])
 
     logging.info("Saving the plot")
     results_df = pd.DataFrame(
         results_data, columns=["Method", "% Perturbed Pixels", "Representation Shift"]
     )
+    
     sns.set(font_scale=1.3)
     sns.set_style("white")
     sns.set_palette("colorblind")
@@ -331,6 +342,7 @@ def proto_consistency_feature_importance(
     plt.tight_layout()
     plt.savefig(save_dir / "proto_mnist_consistency_features.pdf")
     plt.close()
+    results_df.to_csv(save_dir / "consistency_features_df.csv", index=False)
 
 
 def proto_consistency_examples(
@@ -348,7 +360,7 @@ def proto_consistency_examples(
     test_transform = transforms.Compose([transforms.ToTensor()])
     test_dataset.transform = test_transform
     test_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False
+        test_dataset, batch_size=1, shuffle=False
     )
 
     # Initialize encoder, decoder and autoencoder wrapper
@@ -358,50 +370,52 @@ def proto_consistency_examples(
 
     n_prototypes = 128
     pae_model_name = f"PAE_denoising_{n_prototypes}"
-    run = 4
-
-    # Initialize normal encoder, decoder and autoencoder wrapper
-    protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
-    protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
-    protoautoencoder = ProtoAutoEncoderMnist(
-        protoncoder,
-        protodecoder,
-        prototype_shape=(n_prototypes, dim_latent, 1, 1),
-        input_pert=pert,
-        name=pae_model_name + f"_run{run}",
-        metric="l2",
-        prototype_activation_function="log",
-    )
-    protoautoencoder.to(device)
-
-    load_dir = Path.cwd() / f"results/mnist/predictive_performance/{pae_model_name}"
-    protoautoencoder.eval()
-    protoautoencoder.load_state_dict(
-        torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
-    )
-
-    subtest_loader = DataLoader(test_dataset)
-    labels_subtest = torch.cat([label for _, label in subtest_loader])
-
-    n_top_list = [1, 2, 5, 10, 20, 30, 40, 50, 80, 100, 128]
+    runs = 5
     results_list = []
-    logging.info(f"Now fitting explainer")
-    attribution = protoautoencoder.get_prototype_importances(subtest_loader)
+    
+    for run in range(runs):
+        print(f"evaluating run {run}")
+        # Initialize normal encoder, decoder and autoencoder wrapper
+        protoncoder = ProtoEncoderMnist(encoded_space_dim=dim_latent).to(device)
+        protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
+        protoautoencoder = ProtoAutoEncoderMnist(
+            protoncoder,
+            protodecoder,
+            prototype_shape=(n_prototypes, dim_latent, 1, 1),
+            input_pert=pert,
+            name=pae_model_name + f"_run{run}",
+            metric="l2",
+            prototype_activation_function="log",
+        )
+        protoautoencoder.to(device)
 
-    sim_most, sim_least = proto_similarity_rates(
-        attribution, labels_subtest, n_top_list
-    )
-    results_list += [
-        ["PAE", "Most Important", frac, sim] for frac, sim in zip(n_top_list, sim_most)
-    ]
-    results_list += [
-        ["PAE", "Least Important", frac, sim]
-        for frac, sim in zip(n_top_list, sim_least)
-    ]
+        load_dir = Path.cwd() / f"results/mnist/predictive_performance/{pae_model_name}"
+        protoautoencoder.eval()
+        protoautoencoder.load_state_dict(
+            torch.load(load_dir / (protoautoencoder.name + ".pt")), strict=False
+        )
+
+        labels_subtest = torch.cat([label for _, label in test_loader])
+
+        n_top_list = [1, 2, 5, 10, 20, 30, 40, 50, 80, 100, 128]
+        
+        logging.info(f"Now fitting explainer")
+        attribution = protoautoencoder.get_prototype_importances(test_loader)
+
+        sim_most, sim_least = proto_similarity_rates(
+            attribution, labels_subtest, n_top_list, task="denoising", n_prototypes=n_prototypes, run=run
+        )
+        results_list += [
+            ["Most Important", frac, sim] for frac, sim in zip(n_top_list, sim_most)
+        ]
+        results_list += [
+            ["Least Important", frac, sim]
+            for frac, sim in zip(n_top_list, sim_least)
+        ]
+        
     results_df = pd.DataFrame(
         results_list,
         columns=[
-            "Explainer",
             "Type of Examples",
             "Prototypes removed",
             "Similarity Rate",
@@ -418,8 +432,7 @@ def proto_consistency_examples(
         data=results_df,
         x="Prototypes removed",
         y="Similarity Rate",
-        hue="Explainer",
-        style="Type of Examples",
+        hue="Type of Examples",
         palette="colorblind",
     )
     plt.savefig(save_dir / "similarity_rates.pdf")
@@ -464,9 +477,9 @@ def proto_pretext_task_sensitivity(
     train_dataset.transform = train_transform
     test_dataset.transform = test_transform
 
-    train_subset = Subset(train_dataset, indices=list(range(5000)))
-    val_subset = Subset(train_dataset, indices=list(range(5000, 5000 + 1000)))
-    test_subset = Subset(test_dataset, indices=list(range(1000)))
+    train_subset = Subset(train_dataset, indices=list(range(50000)))
+    val_subset = Subset(train_dataset, indices=list(range(50000, 50000 + 10000)))
+    test_subset = Subset(test_dataset, indices=list(range(10000)))
 
     train_loader = DataLoader(train_subset, batch_size=batch_size)
     train_push_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=False)
@@ -559,7 +572,7 @@ def proto_pretext_task_sensitivity(
             if run == 4:
                 logging.info("Saving plots")
                 freeze_epoch = 90
-                prototypes_dir = load_dir / f"prototypes/"
+                prototypes_dir = load_dir / f"prototypes/{protoautoencoder.name}"
                 prototype_img_save_dir = (
                     save_dir / f"{pretext_name}/epoch-{freeze_epoch}-visualize"
                 )
@@ -569,7 +582,7 @@ def proto_pretext_task_sensitivity(
                 for img, _ in sample_loader:
                     input_img = pretext(torch.Tensor(img))
                     output_img, _ = protoautoencoder(input_img)
-                    mse = mse_loss(img, output_img).mean()
+                    mse = mse_loss(img.to(device), output_img).mean()
                     if mse < 0.02:
                         ii += 1
                         loc_analysis = LocalAnalysis(
@@ -603,19 +616,19 @@ def proto_pretext_task_sensitivity(
             n_classes=10,
         )
         logging.info(f"Now fitting {classifier_name}")
-        protoclassifier.fit(
-            device,
-            train_loader,
-            train_push_loader,
-            val_loader,
-            save_dir,
-            100,
-            patience=100,
-            lr=1e-3,
-            start_push_epoch=70,
-            push_epoch_frequency=10,
-            freeze_epoch=90,
-        )
+        # protoclassifier.fit(
+        #     device,
+        #     train_loader,
+        #     train_push_loader,
+        #     val_loader,
+        #     save_dir,
+        #     100,
+        #     patience=100,
+        #     lr=1e-3,
+        #     start_push_epoch=70,
+        #     push_epoch_frequency=10,
+        #     freeze_epoch=90,
+        # )
         protoclassifier.load_state_dict(
             torch.load(save_dir / (protoclassifier.name + ".pt")), strict=False
         )

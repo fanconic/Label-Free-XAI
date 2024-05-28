@@ -137,8 +137,8 @@ def update_prototypes_on_batch(
             search_batch
         )
 
-    protoL_input_ = np.copy(protoL_input_torch.numpy())
-    proto_dist_ = np.copy(proto_dist_torch.numpy())
+    protoL_input_ = np.copy(protoL_input_torch.cpu().numpy())
+    proto_dist_ = np.copy(proto_dist_torch.cpu().numpy())
     del protoL_input_torch, proto_dist_torch
 
     prototype_shape = prototype_network.prototype_shape
@@ -185,7 +185,7 @@ def update_prototypes_on_batch(
 
             # get the whole image
             original_img_j = search_batch_input[rf_prototype_j[0]]
-            original_img_j = original_img_j.numpy()
+            original_img_j = original_img_j.cpu().numpy()
             original_img_j = np.transpose(original_img_j, (1, 2, 0))
             original_img_size = original_img_j.shape[0]
 

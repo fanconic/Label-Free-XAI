@@ -31,6 +31,7 @@ class ProtoEncoderMnist(nn.Module):
         self.encoded_space_dim = encoded_space_dim
 
     def forward(self, x):
+        x = x.to("cuda")
         x = self.encoder_cnn(x)
         return x
 
@@ -111,10 +112,6 @@ class ProtoAutoEncoderMnist(nn.Module):
             nn.ReLU(True),
         )
 
-        nn.Parameter(
-            torch.rand((self.d_prototypes, self.d_prototypes, 5, 5)), requires_grad=True
-        )
-
     def get_representations(self, x) -> torch.Tensor:
         """Returns the latent representation of the PAE, that is a weighted sum of the
             latent representations of training patches
@@ -177,11 +174,11 @@ class ProtoAutoEncoderMnist(nn.Module):
         ).view(-1, self.n_prototypes)
 
         # Activation pattern from the encoder
-        activation_pattern = self.distance_2_similarity(distances).detach().numpy()
+        activation_pattern = self.distance_2_similarity(distances).cpu().detach().numpy()
 
         # Weight (normalised) of every prototype
         prototype_activations = (
-            F.softmax(self.distance_2_similarity(min_distances), dim=1).detach().numpy()
+            F.softmax(self.distance_2_similarity(min_distances), dim=1).cpu().detach().numpy()
         )
 
         attributions = []
@@ -441,7 +438,7 @@ class ProtoAutoEncoderMnist(nn.Module):
         for img, _ in loader:
             input_img = self.input_pert(img)
             prototype_importances = self.get_prototype_importance(input_img)
-            importances.append(prototype_importances.detach().numpy())
+            importances.append(prototype_importances.cpu().detach().numpy())
 
         return np.vstack(importances)
 
@@ -534,8 +531,8 @@ class ProtoClassifierMnist(nn.Module):
         # Prototype Layer:
         self.protolayer = nn.Parameter(
             torch.rand(self.prototype_shape), requires_grad=True
-        )
-        self.ones = nn.Parameter(torch.ones(self.prototype_shape), requires_grad=False)
+        ).to("cuda")
+        self.ones = nn.Parameter(torch.ones(self.prototype_shape), requires_grad=False).to("cuda")
 
         self.up_layer = nn.Sequential(
             nn.ConvTranspose2d(self.d_prototypes, self.d_prototypes, 5),
@@ -600,11 +597,11 @@ class ProtoClassifierMnist(nn.Module):
         ).view(-1, self.n_prototypes)
 
         # Activation pattern from the encoder
-        activation_pattern = self.distance_2_similarity(distances).detach().numpy()
+        activation_pattern = self.distance_2_similarity(distances).cpu().detach().numpy()
 
         # Weight (normalised) of every prototype
         prototype_activations = (
-            F.softmax(self.distance_2_similarity(min_distances), dim=1).detach().numpy()
+            F.softmax(self.distance_2_similarity(min_distances), dim=1).cpu().detach().numpy()
         )
 
         attributions = []
@@ -763,7 +760,7 @@ class ProtoClassifierMnist(nn.Module):
         for image_batch, y in tqdm(dataloader, unit="batch", leave=False):
             image_batch = image_batch.to(device)
             out, min_distances = self.forward(image_batch)
-            loss = self.loss(torch.Tensor(y).long(), out, min_distances)
+            loss = self.loss(torch.Tensor(y).long().to(device), out, min_distances)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -795,7 +792,7 @@ class ProtoClassifierMnist(nn.Module):
             for image_batch, y in dataloader:
                 image_batch = image_batch.to(device)
                 out, min_distances = self.forward(image_batch)
-                loss = self.loss(torch.Tensor(y).long(), out, min_distances)
+                loss = self.loss(torch.Tensor(y).long().to(device), out, min_distances)
                 test_loss.append(loss.cpu().numpy())
         return np.mean(test_loss)
 
@@ -879,7 +876,7 @@ class ProtoClassifierMnist(nn.Module):
         for img, _ in loader:
             input_img = self.input_pert(img)
             prototype_importances = self.get_prototype_importance(input_img)
-            importances.append(prototype_importances.detach().numpy())
+            importances.append(prototype_importances.cpu().detach().numpy())
 
         return np.vstack(importances)
 

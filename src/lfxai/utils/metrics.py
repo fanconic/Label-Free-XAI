@@ -154,6 +154,10 @@ def proto_similarity_rates(
     example_importance: torch.Tensor,
     labels_test: torch.Tensor,
     n_top_list: list = [1, 2, 5, 10, 20, 30, 40, 50],
+    task = "denoising",
+    dataset = "mnist",
+    n_prototypes=128,
+    run=0
 ) -> tuple:
     """
     Computes the similarity rate metric (see paper)
@@ -167,8 +171,8 @@ def proto_similarity_rates(
         Similary rates of most and least important examples for each element in n_to_list
     """
     labels_subtrain = pd.read_csv(
-        "results/mnist/predictive_performance/PAE_denoising_128/prototypes/epoch-90/prototype_labels.csv"
-    )["Label"]
+        f"results/{dataset}/predictive_performance/PAE_{task}_{n_prototypes}/prototypes/PAE_{task}_{n_prototypes}_run{run}/epoch-90/comparison_results_run{run}.csv"
+    )["best_label"]
 
     labels_subtrain = torch.Tensor(labels_subtrain.values)
 
