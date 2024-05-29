@@ -188,6 +188,7 @@ def predictive_performance_and_ablation(
                     name=pae_model_name + f"_run{i}",
                     metric="l2",
                     prototype_activation_function="log",
+                    img_size=28
                 )
                 protoautoencoder.to(device)
 
@@ -258,7 +259,7 @@ def proto_consistency_feature_importance(
     protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
 
     n_prototypes = 128
-    pae_model_name = f"PAE_denoising_{n_prototypes}"
+    pae_model_name = f"PAE_reconstruction_{n_prototypes}"
     runs = 5
 
     
@@ -276,6 +277,7 @@ def proto_consistency_feature_importance(
             name=pae_model_name + f"_run{run}",
             metric="l2",
             prototype_activation_function="log",
+            img_size=28
         )
         protoautoencoder.to(device)
 
@@ -369,7 +371,7 @@ def proto_consistency_examples(
     protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
 
     n_prototypes = 128
-    pae_model_name = f"PAE_denoising_{n_prototypes}"
+    pae_model_name = f"PAE_reconstruction_{n_prototypes}"
     runs = 5
     results_list = []
     
@@ -386,6 +388,7 @@ def proto_consistency_examples(
             name=pae_model_name + f"_run{run}",
             metric="l2",
             prototype_activation_function="log",
+            img_size=28
         )
         protoautoencoder.to(device)
 
@@ -403,7 +406,7 @@ def proto_consistency_examples(
         attribution = protoautoencoder.get_prototype_importances(test_loader)
 
         sim_most, sim_least = proto_similarity_rates(
-            attribution, labels_subtest, n_top_list, task="denoising", n_prototypes=n_prototypes, run=run
+            attribution, labels_subtest, n_top_list, task="reconstruction", n_prototypes=n_prototypes, run=run
         )
         results_list += [
             ["Most Important", frac, sim] for frac, sim in zip(n_top_list, sim_most)
@@ -537,6 +540,7 @@ def proto_pretext_task_sensitivity(
                 name=pae_model_name + f"_run{run}",
                 metric="l2",
                 prototype_activation_function="log",
+                img_size=28
             )
             protoautoencoder.to(device)
             logging.info(f"Now loading {protoautoencoder.name}")
@@ -616,19 +620,20 @@ def proto_pretext_task_sensitivity(
             n_classes=10,
         )
         logging.info(f"Now fitting {classifier_name}")
-        # protoclassifier.fit(
-        #     device,
-        #     train_loader,
-        #     train_push_loader,
-        #     val_loader,
-        #     save_dir,
-        #     100,
-        #     patience=100,
-        #     lr=1e-3,
-        #     start_push_epoch=70,
-        #     push_epoch_frequency=10,
-        #     freeze_epoch=90,
-        # )
+        if run == 4:
+            protoclassifier.fit(
+                device,
+                train_loader,
+                train_push_loader,
+                val_loader,
+                save_dir,
+                100,
+                patience=100,
+                lr=1e-3,
+                start_push_epoch=70,
+                push_epoch_frequency=10,
+                freeze_epoch=90,
+            )
         protoclassifier.load_state_dict(
             torch.load(save_dir / (protoclassifier.name + ".pt")), strict=False
         )

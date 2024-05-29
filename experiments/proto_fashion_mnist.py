@@ -188,6 +188,7 @@ def predictive_performance_and_ablation(
                     name=pae_model_name + f"_run{i}",
                     metric="l2",
                     prototype_activation_function="log",
+                    img_size=28
                 )
                 protoautoencoder.to(device)
 
@@ -257,7 +258,7 @@ def proto_consistency_feature_importance(
     protodecoder = ProtoDecoderMnist(encoded_space_dim=dim_latent).to(device)
 
     n_prototypes = 128
-    pae_model_name = f"PAE_denoising_{n_prototypes}"
+    pae_model_name = f"PAE_reconstruction_{n_prototypes}"
     runs = 5
     
     results_data = []
@@ -274,6 +275,7 @@ def proto_consistency_feature_importance(
             name=pae_model_name + f"_run{run}",
             metric="l2",
             prototype_activation_function="log",
+            img_size=28
         )
         protoautoencoder.to(device)
 
@@ -383,6 +385,7 @@ def proto_consistency_examples(
             name=pae_model_name + f"_run{run}",
             metric="l2",
             prototype_activation_function="log",
+            img_size=28
         )
         protoautoencoder.to(device)
 
@@ -538,6 +541,7 @@ def proto_pretext_task_sensitivity(
                 name=pae_model_name + f"_run{run}",
                 metric="l2",
                 prototype_activation_function="log",
+                img_size=28
             )
             protoautoencoder.to(device)
             logging.info(f"Now loading {protoautoencoder.name}")

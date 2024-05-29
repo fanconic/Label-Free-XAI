@@ -139,6 +139,7 @@ class LocalAnalysis(object):
         prototypes_dir: str,
         epoch_number: int,
         image_save_directory: str,
+        img_size: int = 32,
     ):
         """
         Perform local analysis.
@@ -155,7 +156,7 @@ class LocalAnalysis(object):
 
         self.ppnet = autoencoder
 
-        self.img_size = 28
+        self.img_size = img_size
         prototype_shape = self.ppnet.prototype_shape
         self.max_dist = prototype_shape[1] * prototype_shape[2] * prototype_shape[3]
 
@@ -171,6 +172,7 @@ class LocalAnalysis(object):
 
     def logclose(self):
         self.logclose()
+        
 
     def visualization(
         self,
@@ -213,6 +215,7 @@ class LocalAnalysis(object):
 
         # Forward the image variable through the network
         reconstruction, min_distances = self.ppnet(input_image)
+        reconstruction = denormalize(reconstruction, (0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         conv_output, distances = self.ppnet.push_forward(input_image)
         prototype_activations = F.softmax(
             self.ppnet.distance_2_similarity(min_distances), dim=1
@@ -410,7 +413,7 @@ class LocalAnalysis(object):
                 "Test Image + BBox",
                 "Test Image + Activation Map",
                 "Test sample feature",
-                "Reconustruction",
+                "Reconstruction",
                 "Ground Truth",
             ]
 
@@ -427,3 +430,21 @@ class LocalAnalysis(object):
             plt.show()
 
         return display_images
+
+
+def denormalize(tensor, mean, std):
+    """
+    Denormalize a tensor image.
+
+    Args:
+        tensor (Tensor): Normalized tensor image of shape (C, H, W)
+        mean (tuple): Mean values for each channel used for normalization
+        std (tuple): Standard deviation values for each channel used for normalization
+
+    Returns:
+        Tensor: Denormalized image tensor
+    """
+    mean = torch.tensor(mean).view(3, 1, 1).to("cuda")
+    std = torch.tensor(std).view(3, 1, 1).to("cuda")
+    tensor = tensor * std + mean
+    return tensor

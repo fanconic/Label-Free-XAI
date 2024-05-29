@@ -1200,30 +1200,42 @@ from src.lfxai.utils.receptive_field import compute_proto_layer_rf_info_v2
 from src.lfxai.models.push import push_prototypes
 
 class ProtoSimCLR(nn.Module):
-    def __init__(self, 
-                 base_encoder,
-                 prototype_shape: Tuple[int],
-                 projection_dim=128):
+    def __init__(
+        self, 
+        base_encoder,
+        prototype_shape: Tuple[int],
+        prototype_activation_function: str = "linear",
+        loss_f: callable = nn.MSELoss(),
+        metric: str = "l2", 
+    ):
         super().__init__()
-        self.encoder = base_encoder(
-            pretrained=True
-        )  # load model from torchvision.models without pretrained weights.
+        self.encoder = base_encoder  # load model from torchvision.models without pretrained weights.
         self.feature_dim = self.encoder.fc.in_features
-        
+        self.prototype_shape= prototype_shape
         self.n_prototypes = prototype_shape[0]
         self.d_prototypes = prototype_shape[1]
+        self.metric = metric
+        self.loss_f = loss_f
+        assert self.metric in ["cosine", "l2"]
+        self.prototype_activation_function = prototype_activation_function
+        assert self.prototype_activation_function in ["linear", "log"]
+        self.checkpoints_files = []
+        self.lr = None
+        self.epsilon = 1e-6
 
         # Customize for CIFAR10. Replace conv 7x7 with conv 3x3, and remove first max pooling.
         # See Section B.9 of SimCLR paper.
         self.encoder.conv1 = nn.Conv2d(3, 64, 3, 1, 1, bias=False)
         self.encoder.maxpool = nn.Identity()
+        self.encoder.avgpool = nn.Identity()
         self.encoder.fc = nn.Identity()  # remove final fully connected layer.
         
+
         self.proto_layer_rf_info = compute_proto_layer_rf_info_v2(
             img_size=32,
-            layer_filter_sizes=[3, 3, 3],
-            layer_strides=[2, 2, 1],
-            layer_paddings=[1, 1, 0],
+            layer_filter_sizes=[3, 3, 3, 3, 3, 3, 3, 1, 3, 3, 3, 3, 1, 3, 3, 3, 3, 1, 3, 3],
+            layer_strides=[1, 1, 1, 1, 1, 2, 1, 2, 1 ,1, 2, 1, 2, 1, 1, 2, 1, 2, 1, 1],
+            layer_paddings=[1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1],
             prototype_kernel_size=prototype_shape[2],
         )
 
@@ -1242,7 +1254,6 @@ class ProtoSimCLR(nn.Module):
 
     def forward(self, x):
         x = self.encoder(x)
-        
         distances = self.compute_distances(x)
         # global min pooling
         min_distances = -F.max_pool2d(
@@ -1309,6 +1320,7 @@ class ProtoSimCLR(nn.Module):
 
     @staticmethod
     def nt_xent(x, t=0.5):
+        x = torch.flatten(x, 1)
         x = F.normalize(x, dim=1)
         x_scores = (x @ x.t()).clamp(min=1e-7)  # normalized cosine similarity scores
         x_scale = x_scores / t  # scale with temperature
@@ -1402,8 +1414,8 @@ class ProtoSimCLR(nn.Module):
                 sizes = x.size()
                 x = x.view(sizes[0] * 2, sizes[2], sizes[3], sizes[4]).to(device)
                 optimizer.zero_grad()
-                feature, rep = self.forward(x)
-                loss = self.nt_xent(rep, args.temperature)
+                z, min_distances = self.forward(x)
+                loss = self.nt_xent(z, args.temperature)
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
@@ -1435,7 +1447,7 @@ class ProtoSimCLR(nn.Module):
                     prototype_network=self,
                     pert=Identity(),
                     prototype_layer_stride=1,
-                    root_dir_for_saving_prototypes=f"{self.save_dir}/prototypes/{self.name}",
+                    root_dir_for_saving_prototypes=f"{args.save_dir}/prototypes/{args.name}",
                     epoch_number=epoch,
                     prototype_img_filename_prefix="prototype-img",
                     prototype_self_act_filename_prefix="prototype-self-act",
